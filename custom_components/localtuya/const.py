@@ -9,6 +9,14 @@ CONF_PROTOCOL_VERSION = "protocol_version"
 CONF_DPS_STRINGS = "dps_strings"
 CONF_PRODUCT_KEY = "product_key"
 
+# zigbee
+CONF_ZIGBEE = "zigbee"
+CONF_ZIGBEE_CID = "cid"
+CONF_ZIGBEE_REFRESH = "refresh"
+CONF_ZIGBEE_REFRESH_DP = "dp"
+CONF_ZIGBEE_REFRESH_VALUE = "value"
+CONF_ZIGBEE_REFRESH_INITIAL_VALUE = "initial_value"
+
 # light
 CONF_BRIGHTNESS_LOWER = "brightness_lower"
 CONF_BRIGHTNESS_UPPER = "brightness_upper"

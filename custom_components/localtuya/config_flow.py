@@ -23,6 +23,12 @@ from .const import (
     CONF_LOCAL_KEY,
     CONF_PRODUCT_KEY,
     CONF_PROTOCOL_VERSION,
+    CONF_ZIGBEE,
+    CONF_ZIGBEE_CID,
+    CONF_ZIGBEE_REFRESH,
+    CONF_ZIGBEE_REFRESH_DP,
+    CONF_ZIGBEE_REFRESH_VALUE,
+    CONF_ZIGBEE_REFRESH_INITIAL_VALUE,
     DATA_DISCOVERY,
     DOMAIN,
     PLATFORMS,
@@ -129,13 +135,23 @@ def gen_dps_strings():
 
 def platform_schema(platform, dps_strings, allow_id=True, yaml=False):
     """Generate input validation schema for a platform."""
-    schema = {}
+    schema = {vol.Required(CONF_FRIENDLY_NAME): str}
+
     if yaml:
         # In YAML mode we force the specified platform to match flow schema
         schema[vol.Required(CONF_PLATFORM)] = vol.In([platform])
+        schema[vol.Optional(CONF_ZIGBEE)] = {
+            vol.Required(CONF_ZIGBEE_CID): str,
+            vol.Optional(CONF_ZIGBEE_REFRESH): {
+                vol.Required(CONF_ZIGBEE_REFRESH_DP): vol.In(dps_strings),
+                vol.Required(CONF_ZIGBEE_REFRESH_VALUE): vol.Any(str, int, float),
+                vol.Optional(CONF_ZIGBEE_REFRESH_INITIAL_VALUE): vol.Any(str, int, float)
+            }
+        }
+
     if allow_id:
         schema[vol.Required(CONF_ID)] = vol.In(dps_strings)
-    schema[vol.Required(CONF_FRIENDLY_NAME)] = str
+
     return vol.Schema(schema).extend(flow_schema(platform, dps_strings))
 
 
