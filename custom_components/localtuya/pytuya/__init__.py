@@ -308,7 +308,7 @@ class TuyaListener(ABC):
     """Listener interface for Tuya device changes."""
 
     @abstractmethod
-    def status_updated(self, status):
+    def status_updated(self, status, cid=None):
         """Device updated status."""
 
     @abstractmethod
@@ -361,12 +361,20 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
     def _setup_dispatcher(self):
         def _status_update(msg):
             decoded_message = self._decode_payload(msg.payload)
+            cid = None
             if "dps" in decoded_message:
-                self.dps_cache.update(decoded_message["dps"])
+                if "cid" in decoded_message:
+                    cid = decoded_message["cid"]
+                    if cid in self.dps_cache:
+                        self.dps_cache[cid].update(decoded_message["dps"])
+                    else:
+                        self.dps_cache[cid] = decoded_message["dps"]
+                else:
+                    self.dps_cache.update(decoded_message["dps"])
 
             listener = self.listener and self.listener()
             if listener is not None:
-                listener.status_updated(self.dps_cache)
+                listener.status_updated(self.dps_cache, cid)
 
         return MessageDispatcher(self.id, _status_update)
 
@@ -430,14 +438,14 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
             self.transport = None
             transport.close()
 
-    async def exchange(self, command, dps=None):
+    async def exchange(self, command, dps=None, cid=None):
         """Send and receive a message, returning response from device."""
         self.debug(
             "Sending command %s (device type: %s)",
             command,
             self.dev_type,
         )
-        payload = self._generate_payload(command, dps)
+        payload = self._generate_payload(command, dps, cid)
         dev_type = self.dev_type
 
         # Wait for special sequence number if heartbeat
@@ -464,21 +472,27 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
                 dev_type,
                 self.dev_type,
             )
-            return await self.exchange(command, dps)
+            return await self.exchange(command, dps, cid)
         return payload
 
-    async def status(self):
+    async def status(self, cid=None):
         """Return device status."""
-        status = await self.exchange(STATUS)
+        status = await self.exchange(STATUS, cid=cid)
         if status and "dps" in status:
-            self.dps_cache.update(status["dps"])
+            if "cid" in status:
+                if cid in self.dps_cache:
+                    self.dps_cache[status["cid"]].update(status["dps"])
+                else:
+                    self.dps_cache[status["cid"]] = status["dps"]
+            else:
+                self.dps_cache.update(status["dps"])
         return self.dps_cache
 
     async def heartbeat(self):
         """Send a heartbeat message."""
         return await self.exchange(HEARTBEAT)
 
-    async def set_dp(self, value, dp_index):
+    async def set_dp(self, value, dp_index, cid=None):
         """
         Set value (may be any type: bool, int or string) of any dps index.
 
@@ -486,11 +500,11 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
             dp_index(int):   dps index to set
             value: new value for the dps index
         """
-        return await self.exchange(SET, {str(dp_index): value})
+        return await self.exchange(SET, {str(dp_index): value}, cid)
 
-    async def set_dps(self, dps):
+    async def set_dps(self, dps, cid=None):
         """Set values for a set of datapoints."""
-        return await self.exchange(SET, dps)
+        return await self.exchange(SET, dps, cid)
 
     async def detect_available_dps(self):
         """Return which datapoints are supported by the device."""
@@ -558,7 +572,7 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
         self.debug("Decrypted payload: %s", payload)
         return json.loads(payload)
 
-    def _generate_payload(self, command, data=None):
+    def _generate_payload(self, command, data=None, cid=None):
         """
         Generate the payload to send.
 
@@ -580,6 +594,9 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
             json_data["uid"] = self.id  # still use id, no separate uid
         if "t" in json_data:
             json_data["t"] = str(int(time.time()))
+
+        if cid is not None:
+            json_data = {"cid": cid}
 
         if data is not None:
             json_data["dps"] = data
