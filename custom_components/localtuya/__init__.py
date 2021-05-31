@@ -78,7 +78,7 @@ from homeassistant.helpers.reload import async_integration_yaml_config
 
 from .common import TuyaDevice, async_config_entry_by_device_id
 from .config_flow import config_schema
-from .const import CONF_PRODUCT_KEY, DATA_DISCOVERY, DOMAIN, TUYA_DEVICE
+from .const import CONF_PRODUCT_KEY, CONF_ZIGBEE, CONF_ZIGBEE_CID, DATA_DISCOVERY, DOMAIN, TUYA_DEVICE
 from .discovery import TuyaDiscovery
 
 _LOGGER = logging.getLogger(__name__)
@@ -300,12 +300,14 @@ async def async_remove_orphan_entities(hass, entry):
     """Remove entities associated with config entry that has been removed."""
     ent_reg = await er.async_get_registry(hass)
     entities = {
-        int(ent.unique_id.split("_")[-1]): ent.entity_id
+        ent.unique_id.split("_")[-1]: ent.entity_id
         for ent in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
     }
 
     for entity in entry.data[CONF_ENTITIES]:
-        if entity[CONF_ID] in entities:
+        if CONF_ZIGBEE in entity and entity[CONF_ZIGBEE][CONF_ZIGBEE_CID] in entities:
+            del entities[entity[CONF_ZIGBEE][CONF_ZIGBEE_CID]]
+        elif entity[CONF_ID] in entities:
             del entities[entity[CONF_ID]]
 
     for entity_id in entities.values():

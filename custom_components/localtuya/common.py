@@ -22,6 +22,12 @@ from .const import (
     CONF_LOCAL_KEY,
     CONF_PRODUCT_KEY,
     CONF_PROTOCOL_VERSION,
+    CONF_ZIGBEE,
+    CONF_ZIGBEE_CID,
+    CONF_ZIGBEE_REFRESH,
+    CONF_ZIGBEE_REFRESH_DP,
+    CONF_ZIGBEE_REFRESH_VALUE,
+    CONF_ZIGBEE_REFRESH_INITIAL_VALUE,
     DOMAIN,
     TUYA_DEVICE,
 )
@@ -67,11 +73,12 @@ async def async_setup_entry(
             if dp_conf in device_config:
                 tuyainterface.dps_to_request[device_config[dp_conf]] = None
 
+        id = f"{device_config[CONF_ZIGBEE][CONF_ZIGBEE_CID]}_{device_config[CONF_ID]}" if CONF_ZIGBEE in device_config else device_config[CONF_ID]
         entities.append(
             entity_class(
                 tuyainterface,
                 config_entry,
-                device_config[CONF_ID],
+                id,
             )
         )
 
@@ -85,12 +92,16 @@ def get_dps_for_platform(flow_schema):
             yield key.schema
 
 
-def get_entity_config(config_entry, dp_id):
+def get_entity_config(config_entry, dp_id, cid=None):
     """Return entity config for a given DPS id."""
     for entity in config_entry.data[CONF_ENTITIES]:
-        if entity[CONF_ID] == dp_id:
-            return entity
-    raise Exception(f"missing entity config for id {dp_id}")
+        if cid:
+            if entity[CONF_ZIGBEE][CONF_ZIGBEE_CID] == cid:
+                return entity
+        else:
+            if entity[CONF_ID] == dp_id:
+                return entity
+    raise Exception("missing entity config for " + f"cid {cid}" if cid else f"id {dp_id}")
 
 
 @callback
@@ -145,12 +156,23 @@ class TuyaDevice(pytuya.TuyaListener, pytuya.ContextualLogger):
             )
             self._interface.add_dps_to_request(self.dps_to_request)
 
-            self.debug("Retrieving initial state")
-            status = await self._interface.status()
-            if status is None:
-                raise Exception("Failed to retrieve status")
+            request_status = True
+            for entity in self._config_entry[CONF_ENTITIES]:
+                if CONF_ZIGBEE in entity:
+                    request_status = False
+                    if CONF_ZIGBEE_REFRESH in entity[CONF_ZIGBEE]:
+                        await self.refresh_subdevice(
+                            entity[CONF_ZIGBEE][CONF_ZIGBEE_CID],
+                            entity[CONF_ZIGBEE][CONF_ZIGBEE_REFRESH][CONF_ZIGBEE_REFRESH_DP], 
+                            entity[CONF_ZIGBEE][CONF_ZIGBEE_REFRESH][CONF_ZIGBEE_REFRESH_VALUE], 
+                            entity[CONF_ZIGBEE][CONF_ZIGBEE_REFRESH].get(CONF_ZIGBEE_REFRESH_INITIAL_VALUE)
+                        )
+                    else:
+                        await self.status(entity[CONF_ZIGBEE][CONF_ZIGBEE_CID])
 
-            self.status_updated(status)
+            if request_status:
+                await self.status()
+
         except Exception:  # pylint: disable=broad-except
             self.exception(f"Connect to {self._config_entry[CONF_HOST]} failed")
             if self._interface is not None:
@@ -167,34 +189,75 @@ class TuyaDevice(pytuya.TuyaListener, pytuya.ContextualLogger):
         if self._interface is not None:
             await self._interface.close()
 
-    async def set_dp(self, state, dp_index):
+    async def set_dp(self, state, dp_index, cid=None):
         """Change value of a DP of the Tuya device."""
         if self._interface is not None:
             try:
-                await self._interface.set_dp(state, dp_index)
+                await self._interface.set_dp(state, dp_index, cid)
             except Exception:  # pylint: disable=broad-except
                 self.exception("Failed to set DP %d to %d", dp_index, state)
         else:
-            self.error(
-                "Not connected to device %s", self._config_entry[CONF_FRIENDLY_NAME]
-            )
+            self.error("Not connected to device %s", self._config_entry[CONF_FRIENDLY_NAME])
 
-    async def set_dps(self, states):
+    async def set_dps(self, states, cid=None):
         """Change value of a DPs of the Tuya device."""
         if self._interface is not None:
             try:
-                await self._interface.set_dps(states)
+                await self._interface.set_dps(states, cid)
             except Exception:  # pylint: disable=broad-except
                 self.exception("Failed to set DPs %r", states)
+        else:
+            self.error("Not connected to device %s", self._config_entry[CONF_FRIENDLY_NAME])
+
+    async def refresh_subdevice(self, cid, dp, value, initial_value=None):
+        """Refresh zigbee subdevice."""
+
+        async def refresh_callback():
+            del self._refresh_callbacks[cid]
+
+            self.debug(f"Sub device {cid} refreshed!")
+
+            if initial_value:
+                self.debug(f"Setting initial value for force refresh dp of sub device {cid}")
+                await self._interface.set_dps({dp: initial_value}, cid)
+
+            await self.status(cid)
+
+        self.debug(f"Forcing refresh for sub device {cid}")
+        if not hasattr(self, '_refresh_callbacks'):
+            self._refresh_callbacks = {}
+        self._refresh_callbacks[cid] = refresh_callback 
+        await self._interface.set_dps({dp: value}, cid)
+
+    async def status(self, cid=None):
+        """Get Tuya device status."""
+        if self._interface is not None:
+            self.debug(f"Retrieving state {f'for subdevice {cid}' if cid else ''}")
+
+            try:
+                status = await self._interface.status(cid)
+                if status is not None:
+                    self.status_updated(status, cid)
+                else:
+                    raise Exception("Failed to retrieve status")
+            except Exception:  # pylint: disable=broad-except
+                self.exception("Failed to get status " + f"for sub device {cid}" if cid else "")
         else:
             self.error(
                 "Not connected to device %s", self._config_entry[CONF_FRIENDLY_NAME]
             )
 
     @callback
-    def status_updated(self, status):
+    def status_updated(self, status, cid=None):
         """Device updated status."""
-        self._status.update(status)
+        if cid:
+            if cid in self._status:
+                self._status[cid].update(status[cid])
+            else:
+                self._status[cid] = status[cid]
+
+        else:
+            self._status.update(status)
 
         signal = f"localtuya_{self._config_entry[CONF_DEVICE_ID]}"
         async_dispatcher_send(self._hass, signal, self._status)
@@ -215,10 +278,15 @@ class LocalTuyaEntity(RestoreEntity, pytuya.ContextualLogger):
     def __init__(self, device, config_entry, dp_id, logger, **kwargs):
         """Initialize the Tuya entity."""
         super().__init__()
+        if "_" in str(dp_id):
+            self._cid, self._dp_id = str(dp_id).split("_")
+        else:
+            self._dp_id = dp_id
+            self._cid = None
+
         self._device = device
         self._config_entry = config_entry
-        self._config = get_entity_config(config_entry, dp_id)
-        self._dp_id = dp_id
+        self._config = get_entity_config(config_entry, self._dp_id, self._cid)
         self._status = {}
         self.set_logger(logger, self._config_entry.data[CONF_DEVICE_ID])
 
@@ -232,9 +300,16 @@ class LocalTuyaEntity(RestoreEntity, pytuya.ContextualLogger):
         if state:
             self.status_restored(state)
 
-        def _update_handler(status):
+        async def _update_handler(status):
             """Update entity state when status was updated."""
-            if status is not None:
+            if self._cid:
+                status = status.get(self._cid)
+
+                if status and self._cid in self._device._refresh_callbacks:
+                    await self._device._refresh_callbacks[self._cid]()
+                    return
+
+            if status:
                 self._status = status
                 self.status_updated()
             else:
@@ -274,7 +349,7 @@ class LocalTuyaEntity(RestoreEntity, pytuya.ContextualLogger):
     @property
     def unique_id(self):
         """Return unique device identifier."""
-        return f"local_{self._config_entry.data[CONF_DEVICE_ID]}_{self._dp_id}"
+        return f"local_{self._config_entry.data[CONF_DEVICE_ID]}_{self._cid or self._dp_id}"
 
     def has_config(self, attr):
         """Return if a config parameter has a valid value."""
@@ -297,6 +372,14 @@ class LocalTuyaEntity(RestoreEntity, pytuya.ContextualLogger):
             )
 
         return value
+
+    async def set_dps(self, states):
+        """Change value of a DPs of the Tuya device."""
+        await self._device.set_dps(states, self._cid)
+
+    async def set_dp(self, state, dp_index):
+        """Change value of a DP of the Tuya device."""
+        await self._device.set_dp(state, dp_index, self._cid)
 
     def dps_conf(self, conf_item):
         """Return value of datapoint for user specified config item.
